@@ -1,0 +1,305 @@
+# n8n with external task runners and the Assistant sandbox, on Synology DSM.
+#
+# THIS IS A REFERENCE, NOT A DEPLOYMENT.
+#
+# It is the file running on my DS720+ with secrets replaced by variables. It
+# expects things you will not have: an external Postgres, an external Docker
+# network named `svc`, and SearXNG and Browserless already running in their own
+# compose projects. Take the DSM-specific lines, not the file. They are the
+# ones marked "DSM:" below, and they are listed together in the README.
+#
+# WHAT IS DSM-SPECIFIC HERE
+#
+#   Five environment variables and one volume on sandbox-runner-1, plus the
+#   absence of any `cpus:` limit anywhere. Everything else is ordinary n8n.
+#   SYNOLOGY.md explains each one: symptom, cause, fix, cost.
+#
+# THREE NETWORKS, ON PURPOSE
+#
+#   svc          n8n reaches Postgres, SearXNG and Browserless here.
+#   runner-net   internal, no gateway. Code node JavaScript runs here and can
+#                reach nothing but n8n's task broker.
+#   sandbox-net  the Assistant sandbox. Not internal, because the runner pulls
+#                its sandbox image, and because the Assistant installs
+#                packages.
+#
+# WHAT THE SANDBOX IS, AND IS NOT
+#
+#   sandbox-runner-1 is privileged Docker-in-Docker. Under `privileged: true`,
+#   cap_drop, seccomp, AppArmor and no-new-privileges on this service are
+#   disabled or irrelevant, so nothing in this file makes it safe to share a
+#   kernel with your data. A sandbox escape is root on the NAS.
+#
+#   The controls that do work are inside the sandbox service, not here. It
+#   installs its own egress and inter-container firewall rules in the iptables
+#   `filter` table, and those survive every kernel gap on this host. SECURITY.md
+#   has the measurements.
+#
+#   On this kernel there is no per-sandbox CPU, memory or process limit. The
+#   mem_limit on the runner is the only memory ceiling, and it is verified to
+#   cover the sandboxes nested inside it. There is no CPU ceiling at all.
+#
+#   n8n recommends Daytona rather than this for a production instance.
+
+volumes:
+  # Regenerable mTLS material. Nothing to back up.
+  sandbox-tls:
+  # DSM: the inner Docker daemon's storage. Without its own volume it writes
+  # to the outer container's filesystem and overlay-on-overlay fails at
+  # container create with "no such device". The image pulls fine, the daemon
+  # starts fine, and nothing can ever run.
+  sandbox-docker:
+
+networks:
+  svc:
+    external: true
+  runner-net:
+    driver: bridge
+    internal: true
+  sandbox-net:
+    driver: bridge
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION}
+    container_name: n8n
+    restart: unless-stopped
+    depends_on:
+      sandbox-api:
+        condition: service_healthy
+        # The Assistant is optional and n8n is not. Without this, a failing
+        # sandbox healthcheck blocks n8n from starting. Needs Compose 2.20+.
+        required: false
+    ports:
+      - "${N8N_BIND_IP}:5679:5678"
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      N8N_EDITOR_BASE_URL: "http://${N8N_HOST}:5679/"
+      WEBHOOK_URL: "http://${N8N_HOST}:5679/"
+
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_SECURE_COOKIE: "false"
+      # The Read/Write File node reaches this and nothing else. Changing it
+      # requires recreating the container, not restarting it.
+      N8N_RESTRICT_FILE_ACCESS_TO: /files
+      # A generated expression cannot read N8N_ENCRYPTION_KEY or the database
+      # password. This is why the Browserless and PageSpeed secrets are stored
+      # as credentials rather than environment variables.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+
+      # Code nodes execute in the runners container, on a network with no
+      # gateway. N8N_RUNNERS_ENABLED is gone: deprecated, and runners are
+      # always on.
+      N8N_RUNNERS_MODE: external
+      N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
+      N8N_RUNNERS_BROKER_LISTEN_ADDRESS: 0.0.0.0
+      # Explicit, because the default is being reduced from 300 to 60 and some
+      # workflows here run longer than a minute.
+      N8N_RUNNERS_TASK_TIMEOUT: "300"
+
+      # Assistant. Leave the model key empty in .env and it stays off; the
+      # sandbox still starts, idle.
+      N8N_INSTANCE_AI_MODEL_API_KEY: ${N8N_INSTANCE_AI_MODEL_API_KEY}
+      N8N_SANDBOX_SERVICE_API_KEY: ${SANDBOX_API_KEY}
+      N8N_INSTANCE_AI_SEARXNG_URL: http://searxng:8080
+
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "336"
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: "5000"
+
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "true"
+
+      NODE_OPTIONS: "--max-old-space-size=3072"
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      TZ: ${GENERIC_TIMEZONE}
+    volumes:
+      - type: bind
+        source: ./data
+        target: /home/node/.n8n
+      - type: bind
+        source: ./files
+        target: /files
+    networks: [svc, runner-net, sandbox-net]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  # Runs Code node JavaScript and Python out of process, on a network with no
+  # route anywhere. Publishes nothing; 5680 is its own health port.
+  runners:
+    image: ghcr.io/n8n-io/runners:${N8N_VERSION}
+    container_name: n8n-runners
+    restart: unless-stopped
+    depends_on: [n8n]
+    environment:
+      N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
+      N8N_RUNNERS_TASK_BROKER_URI: http://n8n:5679
+      # Idle launchers exit and relaunch on demand, which matters on a
+      # four-core Celeron shared with Postgres and Browserless.
+      N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT: "15"
+      TZ: ${GENERIC_TIMEZONE}
+    networks: [runner-net]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # DSM: mem_limit works on this kernel. `cpus:` does not, and is rejected
+    # outright with "NanoCPUs can not be set". Do not add one.
+    mem_limit: 1g
+
+  # Runs once, writes the mTLS material the other two need, exits.
+  sandbox-certs:
+    image: ghcr.io/n8n-io/n8n-sandbox-service-api:${N8N_SANDBOX_VERSION}
+    container_name: n8n-sandbox-certs
+    user: "0:0"
+    entrypoint: ["sh", "-c"]
+    command:
+      - >
+        bootstrap-mtls.sh --out-dir /tls --api-san sandbox-api
+        --control-san-prefix sandbox-runner --world-readable &&
+        chown -R sandbox-api:sandbox-api /tls/api && chmod -R a+rX /tls
+    environment:
+      NUM_RUNNERS: "1"
+    volumes:
+      - sandbox-tls:/tls
+    networks: [sandbox-net]
+
+  sandbox-api:
+    image: ghcr.io/n8n-io/n8n-sandbox-service-api:${N8N_SANDBOX_VERSION}
+    container_name: sandbox-api
+    restart: unless-stopped
+    depends_on:
+      sandbox-certs:
+        condition: service_completed_successfully
+    # Explicit, not env_file. n8n's own security checklist requires this. This
+    # container must never see N8N_ENCRYPTION_KEY, POSTGRES_PASSWORD or the
+    # model API key.
+    environment:
+      SANDBOX_API_KEYS: ${SANDBOX_API_KEY}
+      SANDBOX_API_RUNNER_REGISTRATION_TOKEN: ${SANDBOX_REGISTRATION_TOKEN}
+      SANDBOX_API_RUNNER_API_KEY: ${SANDBOX_RUNNER_API_KEY}
+      SANDBOX_API_GRPC_TLS_CERT_FILE: /tls/api/grpc-server.crt
+      SANDBOX_API_GRPC_TLS_KEY_FILE: /tls/api/grpc-server.key
+      SANDBOX_API_GRPC_TLS_CLIENT_CA_FILE: /tls/api/ca.crt
+      SANDBOX_API_RUNNER_CONTROL_GRPC_TLS_CA_FILE: /tls/api/ca.crt
+      SANDBOX_API_RUNNER_CONTROL_GRPC_TLS_CERT_FILE: /tls/api/control-grpc-api-client.crt
+      SANDBOX_API_RUNNER_CONTROL_GRPC_TLS_KEY_FILE: /tls/api/control-grpc-api-client.key
+      SANDBOX_API_RUNNER_CONTROL_GRPC_TLS_SERVER_NAME: sandbox-runner-1
+      TZ: ${GENERIC_TIMEZONE}
+    volumes:
+      - sandbox-tls:/tls:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks: [sandbox-net]
+    security_opt:
+      - no-new-privileges:true
+    # No volume for its SQLite state, deliberately. After a recreate it forgets
+    # existing sandboxes and n8n requests a new one; the orphans are reaped on
+    # the idle TTL.
+    mem_limit: 512m
+
+  # privileged: true, Docker-in-Docker. Read SECURITY.md before running this.
+  sandbox-runner-1:
+    image: ghcr.io/n8n-io/n8n-sandbox-service-runner-dind:${N8N_SANDBOX_VERSION}
+    container_name: sandbox-runner-1
+    restart: unless-stopped
+    privileged: true
+    depends_on:
+      sandbox-api:
+        condition: service_healthy
+    environment:
+      SANDBOX_RUNNER_API_KEYS: ${SANDBOX_RUNNER_API_KEY}
+      SANDBOX_RUNNER_REGISTRATION_TOKEN: ${SANDBOX_REGISTRATION_TOKEN}
+      SANDBOX_RUNNER_API_GRPC_ADDR: sandbox-api:9090
+      SANDBOX_RUNNER_HTTP_BASE_URL: https://sandbox-runner-1:8080
+      SANDBOX_RUNNER_CONTROL_GRPC_LISTEN_ADDR: ":9091"
+      SANDBOX_RUNNER_CONTROL_GRPC_ADVERTISE_ADDR: sandbox-runner-1:9091
+      SANDBOX_RUNNER_ID: runner-1
+      SANDBOX_RUNNER_DOCKER_SANDBOX_IMAGE: ghcr.io/n8n-io/n8n-sandbox-service-sandbox:${N8N_SANDBOX_VERSION}
+      SANDBOX_RUNNER_REGISTRATION_GRPC_CA_FILE: /tls/runner/ca.crt
+      SANDBOX_RUNNER_REGISTRATION_GRPC_CERT_FILE: /tls/runner/grpc-client.crt
+      SANDBOX_RUNNER_REGISTRATION_GRPC_KEY_FILE: /tls/runner/grpc-client.key
+      SANDBOX_RUNNER_REGISTRATION_GRPC_SERVER_NAME: sandbox-api
+      SANDBOX_RUNNER_CONTROL_GRPC_TLS_CERT_FILE: /tls/runner/control-grpc-server.crt
+      SANDBOX_RUNNER_CONTROL_GRPC_TLS_KEY_FILE: /tls/runner/control-grpc-server.key
+      SANDBOX_RUNNER_CONTROL_GRPC_TLS_CLIENT_CA_FILE: /tls/runner/ca.crt
+      TZ: ${GENERIC_TIMEZONE}
+
+      # DSM: the bridge-nf sysctl is not visible inside a container with its
+      # own network namespace, so the inner daemon cannot find
+      # bridge-nf-call-iptables and refuses to start. This flag skips the
+      # check. On kernel 4.4 the sysctl is not namespaced, so the host's value
+      # still applies and inter-container isolation is enforced regardless;
+      # this was measured, see SECURITY.md. On a newer kernel with namespaced
+      # sysctls the same flag would cost real isolation.
+      # Tried and rejected: loading br_netfilter on the host. The module loads
+      # and changes nothing the container can see, because visibility is the
+      # problem, not the module.
+      DOCKER_IGNORE_BR_NETFILTER_ERROR: "1"
+
+      # DSM: no overlayfs module, so the inner daemon's default snapshotter
+      # fails at container create with "fstype: overlay ... no such device".
+      # btrfs matches the host filesystem. Verified: `modprobe overlay` returns
+      # "Module overlay not found" and the host daemon reports btrfs.
+      DOCKER_DRIVER: btrfs
+
+      # DSM: no `raw` iptables table, so the inner daemon cannot create bridge
+      # endpoints. Since Docker 28 it writes raw rules for every endpoint. This
+      # flag, added in 28.0.2, skips only those rules; filter, nat and mangle
+      # are still used. Cost: hosts on this daemon's own network could route
+      # straight to a container address. Nothing else is on that network, and
+      # sandboxes publish no ports.
+      DOCKER_INSECURE_NO_IPTABLES_RAW: "1"
+
+      # DSM: the runner creates every sandbox with --cpus, and this kernel has
+      # no CPU CFS scheduler, so create fails with "NanoCPUs can not be set".
+      # The runner rejects SANDBOX_RUNNER_DEFAULT_CPU_PERCENT=0 ("must be a
+      # positive integer"), so the CPU flag cannot be dropped on its own. This
+      # turns off --cpus, --memory and --pids-limit together. The mem_limit
+      # below is the only ceiling left.
+      SANDBOX_RUNNER_ENABLE_CGROUPS: "false"
+
+      # Default is 1000. With no per-sandbox limits this is the only cap on how
+      # many can exist at once. Not below 4: the settings dialog creates one to
+      # validate the connection and each Assistant conversation gets its own,
+      # so one person holds three without trying. Below that, a new
+      # conversation fails with "no eligible runners".
+      SANDBOX_RUNNER_CAPACITY_TOTAL: "4"
+
+      # Left at its default of 3600. An idle sandbox costs a few MiB, and
+      # reaping sooner discards its files when a conversation is paused.
+      # SANDBOX_RUNNER_IDLE_TTL_SECONDS: "3600"
+    volumes:
+      - sandbox-tls:/tls:ro
+      - sandbox-docker:/var/lib/docker
+    networks: [sandbox-net]
+    # DSM: the only resource ceiling that exists once cgroups are off.
+    # Measured to cover the sandboxes nested inside: 221 MiB idle, 627 MiB
+    # during a 400 MB allocation in a sandbox. The runner itself idles at
+    # about 220 MiB, so sandboxes share roughly 1.8 GB. There is no CPU
+    # equivalent; this kernel cannot provide one.
+    mem_limit: 2g
