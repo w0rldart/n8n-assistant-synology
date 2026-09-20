@@ -1,0 +1,30 @@
+# Secrets. The whole point of .env.example existing.
+.env
+.env.*
+!.env.example
+
+# Anything that looks like key material
+*.key
+*.pem
+*.crt
+*.p12
+.tls/
+
+# Runtime state, if you ever run the stack from a clone of this repo
+data/
+files/
+*.sqlite
+*.sqlite3
+*.db
+
+# Local output
+*.log
+verify-output.txt
+
+# Editors and OS
+.DS_Store
+@eaDir/
+Thumbs.db
+.idea/
+.vscode/
+*.swp
