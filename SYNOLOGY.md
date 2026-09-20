@@ -101,6 +101,10 @@ Cause: `iptable_raw` is compiled out of the kernel. `filter`, `nat` and
 `mangle` exist. Since Docker 28 the daemon writes `raw` table rules for each
 bridge endpoint.
 
+This is why nothing else on the NAS is affected. DSM ships Docker 24.0.2, which
+predates those rules, so the host daemon never needs the table. The runner's
+inner daemon is 29.3.1 and does.
+
 Fix, on `sandbox-runner-1`. Needs inner Docker 28.0.2 or later:
 
 ```yaml
@@ -141,9 +145,10 @@ Cost: this removes the CPU, memory and process limits together. The
 `mem_limit` on the runner service is the only ceiling left. There is no way
 to cap sandbox CPU on this kernel.
 
-`docker stats` reports `PIDS 0` for the runner, which has at least five
-processes. So the pids controller is missing as well. Nothing limits process
-count in a sandbox. A fork bomb is stopped only by the memory ceiling.
+The pids cgroup controller is missing too: `/sys/fs/cgroup/pids` does not
+exist, and `docker stats` reports `PIDS 0` for the runner while it runs at
+least five processes. Nothing limits process count in a sandbox. A fork bomb
+is stopped only by the memory ceiling.
 
 Tried and rejected: `SANDBOX_RUNNER_DEFAULT_CPU_PERCENT: "0"`. The runner
 exits with "must be a positive integer" and crash-loops. While it loops, the

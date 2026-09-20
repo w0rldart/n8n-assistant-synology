@@ -18,7 +18,7 @@ inner Docker 29.3.1, on 20 September 2026.
 | Sandbox daemon ingress | intact | rule dump |
 | Per-sandbox memory limit | lost, relocated | `docker stats` during an allocation |
 | Per-sandbox CPU limit | lost | container create is rejected |
-| Per-sandbox process limit | lost | inferred from `docker stats` |
+| Per-sandbox process limit | lost | pids cgroup controller absent |
 | seccomp | lost | daemon warning at container start |
 | `raw` table rules | lost | deliberately disabled to start the daemon |
 
@@ -179,12 +179,18 @@ generated code competes with everything else on the NAS, and nothing caps it.
 
 ## Per-sandbox process limit: lost, no replacement
 
-`--pids-limit 256` comes off with the other two. `docker stats` reports
-`PIDS 0` for the runner, a container running at least five processes, which
-indicates the pids cgroup controller is absent rather than merely unused.
+`--pids-limit 256` comes off with the other two, and there is nothing to put
+in its place: the pids cgroup controller is not on this kernel.
 
-This is an inference, not a measurement. A fork bomb inside a sandbox is
-bounded by the memory ceiling and nothing else.
+```bash
+ls -d /sys/fs/cgroup/pids
+```
+
+No such directory. `docker stats` agrees, reporting `PIDS 0` for the runner
+while it is running at least five processes.
+
+A fork bomb inside a sandbox is bounded by the memory ceiling and nothing
+else.
 
 ## seccomp: lost, no replacement
 

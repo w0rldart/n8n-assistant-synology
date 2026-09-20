@@ -175,15 +175,11 @@ Re-run `verify.sh` after any upgrade.
 
 ## Confidence
 
-Every claim here was measured on the hardware above, with two exceptions,
-stated so you can weigh them:
+Every claim here was measured on the hardware above, with one exception.
 
-- The absence of the pids cgroup controller is inferred from `docker stats`
-  reporting `PIDS 0` for a container running at least five processes. It was
-  not measured directly.
-- The verbatim error for gap 3 was not captured. The fix and the symptom are
-  from the session where it was diagnosed; the error string is not quoted
-  because I do not have it.
+The verbatim error for gap 3 was never captured. The fix and the symptom come
+from the session where it was diagnosed, and the error string is quoted nowhere
+in this repo because it is not in hand.
 
 ## Licence and attribution
 
