@@ -30,11 +30,14 @@ They appear in this order. Fixing one reveals the next.
 
 ### 1. Bridge netfilter sysctl is not visible in a container
 
-Symptom: the inner daemon fails at bridge network setup. It cannot read
-`/proc/sys/net/bridge/bridge-nf-call-iptables`.
+Symptom: the runner crash-loops. Its log repeats:
 
-Cause: the sysctl is per network namespace and DSM does not expose it inside
-a container that has its own namespace.
+```
+Error response from daemon: cannot restrict inter-container communication or run without the userland proxy: stat /proc/sys/net/bridge/bridge-nf-call-iptables: no such file or directory: set environment variable DOCKER_IGNORE_BR_NETFILTER_ERROR=1 to ignore
+```
+
+Cause: DSM does not expose `/proc/sys/net/bridge` inside a container that
+has its own network namespace.
 
 Fix, on `sandbox-runner-1`:
 
@@ -95,7 +98,19 @@ disabled. Not needed on 29.3.1.
 ### 3. No `raw` iptables table
 
 Symptom: containers cannot join a bridge network. The daemon fails while
-creating the endpoint.
+creating the endpoint. A test container on `runner-bridge`:
+
+```bash
+sudo docker exec sandbox-runner-1 docker run --rm \
+  --network runner-bridge --user 1000:1000 \
+  ghcr.io/n8n-io/n8n-sandbox-service-sandbox:1.4.0 true
+```
+
+```
+docker: Error response from daemon: failed to set up container networking: failed to create endpoint naughty_hellman on network runner-bridge: Unable to enable DIRECT ACCESS FILTERING - DROP rule:  (iptables failed: iptables --wait -t raw -A PREROUTING -d 172.18.0.2 ! -i runner-bridge -j DROP: iptables v1.8.11 (legacy): can't initialize iptables table `raw': Table does not exist (do you need to insmod?)
+Perhaps iptables or your kernel needs to be upgraded.
+ (exit status 3))
+```
 
 Cause: `iptable_raw` is compiled out of the kernel. `filter`, `nat` and
 `mangle` exist. Since Docker 28 the daemon writes `raw` table rules for each

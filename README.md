@@ -20,13 +20,13 @@ and a shared Docker network you will not have. Take
 
 | What you saw | Where | Gap |
 |---|---|---|
-| `NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler or the cgroup is not mounted` | `sandbox-api` log | [4](SYNOLOGY.md#4-no-cpu-cfs-scheduler-no-pids-controller) |
+| `NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler or the cgroup is not mounted` | `sandbox-api` log, or `docker compose up` if a service sets `cpus:` | [4](SYNOLOGY.md#4-no-cpu-cfs-scheduler-no-pids-controller) |
 | `The service couldn't be reached. Check the URL and network access, then try again.` | n8n's sandbox settings dialog | [4](SYNOLOGY.md#4-no-cpu-cfs-scheduler-no-pids-controller), and see below |
 | `SANDBOX_RUNNER_DEFAULT_CPU_PERCENT must be a positive integer, got "0"` | runner log, crash loop | [4](SYNOLOGY.md#4-no-cpu-cfs-scheduler-no-pids-controller) |
 | `create sandbox failed: no eligible runners` | `sandbox-api` log | the runner is crash-looping; read its log |
-| `cannot restrict inter-container communication or run without the userland proxy: stat /proc/sys/net/bridge/bridge-nf-call-iptables: no such file or directory` | inner `dockerd.log` | [1](SYNOLOGY.md#1-bridge-netfilter-sysctl-is-not-visible-in-a-container) |
+| `cannot restrict inter-container communication or run without the userland proxy: stat /proc/sys/net/bridge/bridge-nf-call-iptables: no such file or directory` | runner log, crash loop | [1](SYNOLOGY.md#1-bridge-netfilter-sysctl-is-not-visible-in-a-container) |
 | `Module overlay not found`, and container create failing on `fstype: overlay` | `modprobe`, inner daemon | [2](SYNOLOGY.md#2-no-overlayfs-module) |
-| Inner daemon cannot create bridge endpoints | inner `dockerd.log` | [3](SYNOLOGY.md#3-no-raw-iptables-table) |
+| `Unable to enable DIRECT ACCESS FILTERING - DROP rule`, then `can't initialize iptables table 'raw': Table does not exist` | `docker run` inside the runner | [3](SYNOLOGY.md#3-no-raw-iptables-table) |
 | `seccomp is not enabled in your kernel, running container without default profile` | inner `dockerd.log` | [5](SYNOLOGY.md#5-no-seccomp), no fix |
 
 That second row is worth calling out. n8n's dialog reports a network problem
@@ -175,11 +175,11 @@ Re-run `verify.sh` after any upgrade.
 
 ## Confidence
 
-Every claim here was measured on the hardware above, with one exception.
+Every claim here was measured on the hardware above.
 
-The verbatim error for gap 3 was never captured. The fix and the symptom come
-from the session where it was diagnosed, and the error string is quoted nowhere
-in this repo because it is not in hand.
+An earlier version said the verbatim error for gap 3 was never captured. It
+was, in the session where the gap was diagnosed, and it is now quoted in
+[SYNOLOGY.md](SYNOLOGY.md#3-no-raw-iptables-table).
 
 ## Licence and attribution
 

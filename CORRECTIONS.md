@@ -55,12 +55,3 @@ is not. The settings dialog creates one sandbox to validate the connection and
 each Assistant conversation gets its own, so one person holds three without
 trying, and the next one fails with `no eligible runners`. It is set to 4, and
 the memory ceiling on the runner is the control that actually matters.
-
-## One thing still not measured
-
-Stated here instead of buried, because the rest of this repo claims to be
-measured and this is not.
-
-The verbatim error for the missing `raw` iptables table was never captured. The
-symptom and the fix are recorded from the session where it was diagnosed. The
-error string appears nowhere in this repo because it is not in hand.
